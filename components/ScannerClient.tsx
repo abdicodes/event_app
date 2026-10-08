@@ -12,159 +12,212 @@ type Result = {
   eventName?: string;
 };
 
-export default function ScannerClient({ events, initialEventId }: { events: EventOption[]; initialEventId?: number }) {
+export default function ScannerClient({
+  events,
+  initialEventId,
+}: {
+  events: EventOption[];
+  initialEventId?: number;
+}) {
   const [mode, setMode] = useState<ScanMode>("CHECK_IN");
-  const initialId = events.some((event) => event.id === initialEventId) ? initialEventId! : (events[0]?.id ?? 0);
+  const initialId = events.some((event) => event.id === initialEventId)
+    ? initialEventId!
+    : (events[0]?.id ?? 0);
   const [eventId, setEventId] = useState<number>(initialId);
   const [result, setResult] = useState<Result>({
     kind: "idle",
     message: events.length ? "Ready to scan a badge" : "Create an event before scanning",
   });
   const [manual, setManual] = useState("");
-  const [cameraState, setCameraState] = useState(events.length ? "Starting camera…" : "No event available");
+  const [cameraState, setCameraState] = useState(
+    events.length ? "Starting camera…" : "No event available",
+  );
   const [awaitingAck, setAwaitingAck] = useState(false);
 
-  const lockRef = useRef(false);
+  // Important: these refs are the authoritative values used by the camera callback.
+  // They are updated synchronously by the controls below, not later in an effect.
+  const modeRef = useRef<ScanMode>("CHECK_IN");
+  const eventIdRef = useRef<number>(initialId);
+  const awaitingAckRef = useRef(false);
+  const requestInFlightRef = useRef(false);
   const scannerRef = useRef<any>(null);
-  const modeRef = useRef<ScanMode>(mode);
-  const eventIdRef = useRef(eventId);
   const scannerPanelRef = useRef<HTMLElement | null>(null);
   const resultPanelRef = useRef<HTMLElement | null>(null);
-  const lastCameraValueRef = useRef("");
-  const ignoreSameUntilRef = useRef(0);
+  const lastProcessedRef = useRef("");
+  const suppressSameUntilRef = useRef(0);
 
-  function readyMessage(nextMode = modeRef.current, nextEventId = eventIdRef.current) {
-    const selected = events.find((event) => event.id === nextEventId);
-    if (!selected) return "Create an event before scanning";
-    return `Ready to ${nextMode === "CHECK_IN" ? "check in" : "check out"} for ${selected.name}`;
+  function selectedEventName(id = eventIdRef.current) {
+    return events.find((event) => Number(event.id) === Number(id))?.name;
   }
 
-  useEffect(() => {
-    modeRef.current = mode;
-    if (!awaitingAck) setResult({ kind: "idle", message: readyMessage(mode, eventIdRef.current) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  function readyMessage(nextMode = modeRef.current, nextEventId = eventIdRef.current) {
+    const name = selectedEventName(nextEventId);
+    if (!name) return "Create an event before scanning";
+    return `Ready to ${nextMode === "CHECK_IN" ? "check in" : "check out"} for ${name}`;
+  }
 
-  useEffect(() => {
-    eventIdRef.current = eventId;
-    if (!awaitingAck) setResult({ kind: "idle", message: readyMessage(modeRef.current, eventId) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId, events]);
+  function setAcknowledgementState(value: boolean) {
+    awaitingAckRef.current = value;
+    setAwaitingAck(value);
+  }
+
+  function handleEventChange(nextEventId: number) {
+    // Set the ref before React state so a camera callback in the same frame cannot
+    // accidentally submit against the previously selected event.
+    eventIdRef.current = nextEventId;
+    setEventId(nextEventId);
+    if (!awaitingAckRef.current) {
+      setResult({ kind: "idle", message: readyMessage(modeRef.current, nextEventId) });
+    }
+  }
+
+  function handleModeChange(nextMode: ScanMode) {
+    modeRef.current = nextMode;
+    setMode(nextMode);
+    if (!awaitingAckRef.current) {
+      setResult({ kind: "idle", message: readyMessage(nextMode, eventIdRef.current) });
+    }
+  }
 
   useEffect(() => {
     if (!awaitingAck) return;
-    const frame = window.requestAnimationFrame(() => {
+    const timer = window.setTimeout(() => {
       resultPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-    return () => window.cancelAnimationFrame(frame);
+    }, 60);
+    return () => window.clearTimeout(timer);
   }, [awaitingAck, result]);
 
-  function showResult(next: Result, rawValue: string) {
-    lastCameraValueRef.current = rawValue;
+  function finishWithResult(next: Result, rawValue: string) {
+    lastProcessedRef.current = rawValue;
     setResult(next);
-    setAwaitingAck(true);
-    try {
-      scannerRef.current?.pause?.(true);
-    } catch {
-      // The scan lock below still prevents another attendance action if pause is unavailable.
-    }
+    setAcknowledgementState(true);
+
+    // Do NOT pause html5-qrcode here. Keeping the camera stream running avoids the
+    // slow reacquisition that happened after resume() on iPhone. Further decoded
+    // frames are simply ignored by awaitingAckRef/requestInFlightRef.
   }
 
   function acknowledgeResult() {
-    setAwaitingAck(false);
+    // Ignore the same physical badge for a short moment while staff move it away
+    // from the camera, but keep the camera itself running continuously.
+    suppressSameUntilRef.current = Date.now() + 1800;
+    requestInFlightRef.current = false;
+    setAcknowledgementState(false);
     setManual("");
     setResult({ kind: "idle", message: readyMessage() });
-    ignoreSameUntilRef.current = Date.now() + 2_000;
-    lockRef.current = false;
-    try {
-      scannerRef.current?.resume?.();
-    } catch {
-      // Some html5-qrcode versions do not expose resume; scanning remains active in those versions.
-    }
-    window.requestAnimationFrame(() => {
+
+    window.setTimeout(() => {
       scannerPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
+    }, 40);
   }
 
-  async function submit(rawToken: string, source: "camera" | "manual" = "camera") {
-    if (!eventIdRef.current || lockRef.current) return;
+  async function submit(rawCredential: string, source: "camera" | "manual" = "camera") {
+    const credential = rawCredential.trim();
+    if (!credential) return;
+    if (!eventIdRef.current) return;
+    if (awaitingAckRef.current || requestInFlightRef.current) return;
+
     if (
       source === "camera" &&
-      rawToken === lastCameraValueRef.current &&
-      Date.now() < ignoreSameUntilRef.current
+      credential === lastProcessedRef.current &&
+      Date.now() < suppressSameUntilRef.current
     ) {
       return;
     }
 
-    lockRef.current = true;
+    requestInFlightRef.current = true;
+    const submittedEventId = eventIdRef.current;
+    const submittedMode = modeRef.current;
+    const submittedEventName = selectedEventName(submittedEventId);
+
     try {
-      const res = await fetch("/api/attendance/scan", {
+      const response = await fetch("/api/attendance/scan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          rawToken,
-          mode: modeRef.current,
-          eventId: eventIdRef.current,
+          rawToken: credential,
+          mode: submittedMode,
+          eventId: submittedEventId,
           scannerLabel: navigator.userAgent.slice(0, 80),
         }),
       });
-      const data = await res.json();
 
-      if (res.ok) {
-        showResult(
+      const data = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        finishWithResult(
           {
             kind: "good",
-            name: data.guest.name,
-            message: data.message,
-            eventName: data.event?.name,
-            time: new Intl.DateTimeFormat("en", {
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-              timeZone: "Asia/Singapore",
-            }).format(new Date(data.timestamp)),
+            name: data.guest?.name,
+            message: data.message || "Attendance updated",
+            eventName: data.event?.name || submittedEventName,
+            time: data.timestamp
+              ? new Intl.DateTimeFormat("en", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false,
+                  timeZone: "Asia/Singapore",
+                }).format(new Date(data.timestamp))
+              : undefined,
           },
-          rawToken,
+          credential,
         );
         if (navigator.vibrate) navigator.vibrate(120);
-      } else {
-        const warningCodes = [
-          "ALREADY_INSIDE",
-          "ALREADY_CHECKED_OUT",
-          "SCAN_COOLDOWN",
-          "NOT_REGISTERED_FOR_EVENT",
-          "EVENT_ENDED",
-        ];
-        showResult(
-          {
-            kind: warningCodes.includes(data.code) ? "warn" : "bad",
-            name: data.guestName,
-            message: data.error || "Scan failed",
-          },
-          rawToken,
-        );
-        if (navigator.vibrate) navigator.vibrate([80, 70, 80]);
+        return;
       }
+
+      const warningCodes = [
+        "ALREADY_INSIDE",
+        "ALREADY_CHECKED_OUT",
+        "NOT_CHECKED_IN",
+        "SCAN_COOLDOWN",
+        "NOT_REGISTERED_FOR_EVENT",
+        "EVENT_ENDED",
+      ];
+
+      finishWithResult(
+        {
+          kind: warningCodes.includes(data.code) ? "warn" : "bad",
+          name: data.guestName,
+          message: data.error || "Scan failed",
+          // Showing the submitted event on errors makes it immediately obvious if
+          // staff accidentally selected the wrong event.
+          eventName: submittedEventName,
+        },
+        credential,
+      );
+      if (navigator.vibrate) navigator.vibrate([80, 70, 80]);
     } catch {
-      showResult({ kind: "bad", message: "Network error. No attendance record was created." }, rawToken);
+      finishWithResult(
+        {
+          kind: "bad",
+          message: "Network error. No attendance record was created.",
+          eventName: submittedEventName,
+        },
+        credential,
+      );
     }
   }
 
   useEffect(() => {
     if (!events.length) return;
     let cancelled = false;
+
     (async () => {
       try {
         const mod = await import("html5-qrcode");
         if (cancelled) return;
+
         const scanner = new mod.Html5Qrcode("reader", {
           formatsToSupport: [mod.Html5QrcodeSupportedFormats.QR_CODE],
           verbose: false,
         });
         scannerRef.current = scanner;
+
         await scanner.start(
           { facingMode: "environment" },
           {
+            // Keep the same proven camera configuration as the last working scanner.
             fps: 10,
             qrbox: (width: number, height: number) => ({
               width: Math.min(280, width - 30),
@@ -172,24 +225,34 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
             }),
             aspectRatio: 1.0,
           },
-          (decoded: string) => submit(decoded, "camera"),
+          (decoded: string) => {
+            void submit(decoded, "camera");
+          },
           () => {},
         );
-        setCameraState("Camera active");
+
+        if (!cancelled) setCameraState("Camera active");
       } catch {
-        setCameraState("Camera unavailable — use HTTPS, allow camera access, or enter the badge code manually.");
+        if (!cancelled) {
+          setCameraState(
+            "Camera unavailable — use HTTPS, allow camera access, or enter the badge code manually.",
+          );
+        }
       }
     })();
 
     return () => {
       cancelled = true;
       const scanner = scannerRef.current;
+      scannerRef.current = null;
       if (scanner) scanner.stop().catch(() => {});
     };
+    // Camera is deliberately started once. Current mode/event are read from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const icon = result.kind === "good" ? "✓" : result.kind === "warn" ? "!" : result.kind === "bad" ? "×" : "⌁";
+  const icon =
+    result.kind === "good" ? "✓" : result.kind === "warn" ? "!" : result.kind === "bad" ? "×" : "⌁";
 
   return (
     <div className="scanner-layout">
@@ -200,7 +263,7 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
             id="scan-event"
             className="select"
             value={eventId || ""}
-            onChange={(event) => setEventId(Number(event.target.value))}
+            onChange={(event) => handleEventChange(Number(event.target.value))}
             disabled={!events.length || awaitingAck}
           >
             {!events.length && <option value="">No events available</option>}
@@ -215,7 +278,7 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
         <div className="mode-grid" role="group" aria-label="Scan mode">
           <button
             className={`mode-btn ${mode === "CHECK_IN" ? "active" : ""}`}
-            onClick={() => setMode("CHECK_IN")}
+            onClick={() => handleModeChange("CHECK_IN")}
             type="button"
             disabled={!events.length || awaitingAck}
           >
@@ -223,7 +286,7 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
           </button>
           <button
             className={`mode-btn ${mode === "CHECK_OUT" ? "active" : ""}`}
-            onClick={() => setMode("CHECK_OUT")}
+            onClick={() => handleModeChange("CHECK_OUT")}
             type="button"
             disabled={!events.length || awaitingAck}
           >
@@ -232,13 +295,15 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
         </div>
 
         <div id="reader" aria-label="QR camera scanner" />
-        <p className="small muted">{awaitingAck ? "Scan paused — confirm the result below." : cameraState}</p>
+        <p className="small muted">
+          {awaitingAck ? "Result waiting for confirmation below." : cameraState}
+        </p>
 
         <form
           className="actions"
           onSubmit={(event) => {
             event.preventDefault();
-            if (manual.trim()) submit(manual.trim(), "manual");
+            if (manual.trim()) void submit(manual, "manual");
           }}
         >
           <input
@@ -264,14 +329,14 @@ export default function ScannerClient({ events, initialEventId }: { events: Even
             <div className="message">{result.message}</div>
             {result.time && <div className="scan-result-time">{result.time} GMT+8</div>}
             {awaitingAck && (
-              <button className="btn accent scan-ok-btn" type="button" onClick={acknowledgeResult} autoFocus>
+              <button className="btn accent scan-ok-btn" type="button" onClick={acknowledgeResult}>
                 OK — next scan
               </button>
             )}
           </div>
         </div>
         <p className="small muted scanner-help">
-          Check the result before continuing. Press OK to return to the camera for the next badge.
+          Check the selected event shown above the result. Press OK to continue with the next badge.
         </p>
       </aside>
     </div>
