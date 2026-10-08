@@ -1,10 +1,6 @@
 {
   "name": "event-qr-attendance-mvp",
-<<<<<<< HEAD
-  "version": "1.0.0",
-=======
   "version": "1.5.4",
->>>>>>> 50ba541 (Updated project)
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -15,18 +11,6 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "node scripts/seed.mjs",
     "qr:generate": "node scripts/generate-mock-qr.mjs",
-<<<<<<< HEAD
-    "setup:demo": "npm run db:migrate && npm run db:seed && npm run qr:generate"
-  },
-  "dependencies": {
-    "html5-qrcode": "2.3.8",
-    "next": "^16.0.0",
-    "postgres": "^3.4.7",
-    "qrcode": "^1.5.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "dotenv": "^17.2.2"
-=======
     "setup:demo": "npm run db:migrate && npm run db:seed && npm run qr:generate",
     "typecheck": "tsc --noEmit"
   },
@@ -39,7 +23,6 @@
     "react-dom": "19.3.0",
     "dotenv": "18.0.5",
     "pdf-lib": "1.17.1"
->>>>>>> 50ba541 (Updated project)
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -47,11 +30,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.0.0",
-<<<<<<< HEAD
-    "eslint-config-next": "^16.0.0",
-=======
     "eslint-config-next": "16.3.8",
->>>>>>> 50ba541 (Updated project)
     "typescript": "^5.9.0"
   }
 }
