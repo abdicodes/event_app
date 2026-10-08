@@ -13,6 +13,13 @@ type Result = {
   debugRef?: string;
 };
 
+type CameraScanner = {
+  start: () => Promise<void>;
+  stop: () => void;
+  destroy: () => void;
+  setCamera: (camera: string) => Promise<void>;
+};
+
 export default function ScannerClient({
   events,
   initialEventId,
@@ -35,13 +42,12 @@ export default function ScannerClient({
   );
   const [awaitingAck, setAwaitingAck] = useState(false);
 
-  // Important: these refs are the authoritative values used by the camera callback.
-  // They are updated synchronously by the controls below, not later in an effect.
   const modeRef = useRef<ScanMode>("CHECK_IN");
   const eventIdRef = useRef<number>(initialId);
   const awaitingAckRef = useRef(false);
   const requestInFlightRef = useRef(false);
-  const scannerRef = useRef<any>(null);
+  const scannerRef = useRef<CameraScanner | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerPanelRef = useRef<HTMLElement | null>(null);
   const resultPanelRef = useRef<HTMLElement | null>(null);
   const lastProcessedRef = useRef("");
@@ -63,8 +69,6 @@ export default function ScannerClient({
   }
 
   function handleEventChange(nextEventId: number) {
-    // Set the ref before React state so a camera callback in the same frame cannot
-    // accidentally submit against the previously selected event.
     eventIdRef.current = nextEventId;
     setEventId(nextEventId);
     if (!awaitingAckRef.current) {
@@ -92,16 +96,10 @@ export default function ScannerClient({
     lastProcessedRef.current = rawValue;
     setResult(next);
     setAcknowledgementState(true);
-
-    // Do NOT pause html5-qrcode here. Keeping the camera stream running avoids the
-    // slow reacquisition that happened after resume() on iPhone. Further decoded
-    // frames are simply ignored by awaitingAckRef/requestInFlightRef.
   }
 
   function acknowledgeResult() {
-    // Ignore the same physical badge for a short moment while staff move it away
-    // from the camera, but keep the camera itself running continuously.
-    suppressSameUntilRef.current = Date.now() + 1800;
+    suppressSameUntilRef.current = Date.now() + 1600;
     requestInFlightRef.current = false;
     setAcknowledgementState(false);
     setManual("");
@@ -114,8 +112,7 @@ export default function ScannerClient({
 
   async function submit(rawCredential: string, source: "camera" | "manual" = "camera") {
     const credential = rawCredential.trim();
-    if (!credential) return;
-    if (!eventIdRef.current) return;
+    if (!credential || !eventIdRef.current) return;
     if (awaitingAckRef.current || requestInFlightRef.current) return;
 
     if (
@@ -181,12 +178,11 @@ export default function ScannerClient({
           kind: warningCodes.includes(data.code) ? "warn" : "bad",
           name: data.guestName,
           message: data.error || "Scan failed",
-          // Showing the submitted event on errors makes it immediately obvious if
-          // staff accidentally selected the wrong event.
           eventName: submittedEventName,
-          debugRef: data.guestId || data.eventId
-            ? `Guest ID ${data.guestId ?? "?"} · Event ID ${data.eventId ?? submittedEventId}`
-            : undefined,
+          debugRef:
+            data.guestId || data.eventId
+              ? `Guest ID ${data.guestId ?? "?"} · Event ID ${data.eventId ?? submittedEventId}`
+              : undefined,
         },
         credential,
       );
@@ -205,37 +201,92 @@ export default function ScannerClient({
 
   useEffect(() => {
     if (!events.length) return;
+
     let cancelled = false;
 
     (async () => {
       try {
-        const mod = await import("html5-qrcode");
-        if (cancelled) return;
+        const [{ default: QrScanner }] = await Promise.all([import("qr-scanner")]);
+        if (cancelled || !videoRef.current) return;
 
-        const scanner = new mod.Html5Qrcode("reader", {
-          formatsToSupport: [mod.Html5QrcodeSupportedFormats.QR_CODE],
-          verbose: false,
-        });
-        scannerRef.current = scanner;
+        const video = videoRef.current;
 
-        await scanner.start(
-          { facingMode: "environment" },
+        const scanner = new QrScanner(
+          video,
+          (scanResult) => {
+            const decoded = typeof scanResult === "string" ? scanResult : scanResult.data;
+            if (decoded) void submit(decoded, "camera");
+          },
           {
-            // Decode the entire camera frame. A fixed qrbox crops the image before
-            // decoding and was preventing iPhones from seeing badge QRs unless the
-            // code was perfectly centered and at exactly the right distance.
-            fps: 15,
+            preferredCamera: "environment",
+            maxScansPerSecond: 25,
+            returnDetailedScanResult: true,
+            highlightScanRegion: true,
+            highlightCodeOutline: true,
+            // A large region is easier to aim than the previous narrow box, while
+            // keeping enough source pixels for a small badge QR on an iPhone.
+            calculateScanRegion: (sourceVideo) => {
+              const sourceWidth = sourceVideo.videoWidth || 1280;
+              const sourceHeight = sourceVideo.videoHeight || 720;
+              const side = Math.round(Math.min(sourceWidth, sourceHeight) * 0.88);
+              return {
+                x: Math.round((sourceWidth - side) / 2),
+                y: Math.round((sourceHeight - side) / 2),
+                width: side,
+                height: side,
+                // qr-scanner normally downsamples aggressively. 900px preserves
+                // substantially more detail from the small printed badge QR.
+                downScaledWidth: 900,
+                downScaledHeight: 900,
+              };
+            },
+            onDecodeError: () => {
+              // Normal while there is no QR in the frame; do not update React.
+            },
           },
-          (decoded: string) => {
-            void submit(decoded, "camera");
-          },
-          () => {},
         );
 
-        if (!cancelled) {
-          setCameraState("Camera active — place the QR anywhere in the camera view");
+        scannerRef.current = scanner;
+        await scanner.start();
+        if (cancelled) return;
+
+        // On devices that expose autofocus controls, ask for continuous focus.
+        // Safari may ignore this, so it is deliberately best-effort only.
+        try {
+          const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
+          const track = stream?.getVideoTracks()[0];
+          if (track) {
+            await track.applyConstraints({
+              advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
+            } as MediaTrackConstraints);
+          }
+        } catch {
+          // Unsupported camera control; scanning still works without it.
         }
-      } catch {
+
+        // Some iPhones expose an ultrawide rear camera as the default environment
+        // camera. It is poor at close-focus QR reading. If that happened, switch
+        // once to a non-ultrawide rear camera when one is available.
+        try {
+          const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
+          const currentLabel = stream?.getVideoTracks()[0]?.label?.toLowerCase() || "";
+          if (/ultra\s*wide|ultrawide/.test(currentLabel)) {
+            const cameras = await QrScanner.listCameras(true);
+            const betterRear = cameras.find((camera) => {
+              const label = camera.label.toLowerCase();
+              return /back|rear|environment/.test(label) && !/ultra|tele/.test(label);
+            });
+            if (betterRear) await scanner.setCamera(betterRear.id);
+          }
+        } catch {
+          // Keep the camera Safari already selected.
+        }
+
+        if (!cancelled) {
+          setCameraState("Camera active — hold the badge steady and let the QR fill about ¼ of the frame");
+        }
+      } catch (error) {
+        console.error("QR camera start failed", error);
         if (!cancelled) {
           setCameraState(
             "Camera unavailable — use HTTPS, allow camera access, or enter the badge code manually.",
@@ -248,9 +299,16 @@ export default function ScannerClient({
       cancelled = true;
       const scanner = scannerRef.current;
       scannerRef.current = null;
-      if (scanner) scanner.stop().catch(() => {});
+      if (scanner) {
+        try {
+          scanner.stop();
+          scanner.destroy();
+        } catch {
+          // Component is already unmounting.
+        }
+      }
     };
-    // Camera is deliberately started once. Current mode/event are read from refs.
+    // Camera starts once; current event/mode are read synchronously from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -297,7 +355,9 @@ export default function ScannerClient({
           </button>
         </div>
 
-        <div id="reader" aria-label="QR camera scanner" />
+        <div className="fast-qr-reader" aria-label="QR camera scanner">
+          <video ref={videoRef} className="fast-qr-video" playsInline muted />
+        </div>
         <p className="small muted">
           {awaitingAck ? "Result waiting for confirmation below." : cameraState}
         </p>
@@ -331,7 +391,11 @@ export default function ScannerClient({
             {result.eventName && <div className="small muted scan-event-name">{result.eventName}</div>}
             <div className="message">{result.message}</div>
             {result.time && <div className="scan-result-time">{result.time} GMT+8</div>}
-            {result.debugRef && <div className="small muted" style={{ marginTop: 8 }}>{result.debugRef}</div>}
+            {result.debugRef && (
+              <div className="small muted" style={{ marginTop: 8 }}>
+                {result.debugRef}
+              </div>
+            )}
             {awaitingAck && (
               <button className="btn accent scan-ok-btn" type="button" onClick={acknowledgeResult}>
                 OK — next scan
