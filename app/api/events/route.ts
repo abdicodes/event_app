@@ -10,10 +10,7 @@ export async function POST(request:Request){
   if(name.length<2||name.length>140) return NextResponse.json({error:"Event name must be 2–140 characters"},{status:400});
   const startsAt=body.startsAt?new Date(body.startsAt):null;
   const endsAt=body.endsAt?new Date(body.endsAt):null;
-<<<<<<< HEAD
-=======
   if(!startsAt||!endsAt) return NextResponse.json({error:"Start and end times are required for automatic checkout"},{status:400});
->>>>>>> 50ba541 (Updated project)
   if(startsAt && Number.isNaN(startsAt.getTime())) return NextResponse.json({error:"Invalid start date"},{status:400});
   if(endsAt && Number.isNaN(endsAt.getTime())) return NextResponse.json({error:"Invalid end date"},{status:400});
   if(startsAt&&endsAt&&endsAt.getTime()<startsAt.getTime()) return NextResponse.json({error:"End time must be after start time"},{status:400});

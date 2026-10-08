@@ -23,23 +23,14 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE TABLE IF NOT EXISTS guests (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
-<<<<<<< HEAD
-  delegation_wg TEXT,
-  qr_token TEXT NOT NULL UNIQUE,
-=======
   region TEXT,
   qr_token TEXT NOT NULL UNIQUE,
   badge_code TEXT UNIQUE,
->>>>>>> 50ba541 (Updated project)
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS guests_name_idx ON guests(name);
 
-<<<<<<< HEAD
--- Upgrade older guest directory schemas without losing the former Company value.
-ALTER TABLE guests ADD COLUMN IF NOT EXISTS delegation_wg TEXT;
-=======
 -- Human-enterable badge code for guest self-identification. The QR token stays
 -- long/random; badge_code is shorter and can be typed manually.
 ALTER TABLE guests ADD COLUMN IF NOT EXISTS badge_code TEXT;
@@ -52,16 +43,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS guests_badge_code_idx ON guests(badge_code);
 -- Region is the canonical guest grouping field. Preserve values from older
 -- Delegation/WG and Company schemas before dropping the legacy columns.
 ALTER TABLE guests ADD COLUMN IF NOT EXISTS region TEXT;
->>>>>>> 50ba541 (Updated project)
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-<<<<<<< HEAD
-    WHERE table_schema='public' AND table_name='guests' AND column_name='company'
-  ) THEN
-    EXECUTE 'UPDATE guests SET delegation_wg=company WHERE delegation_wg IS NULL AND company IS NOT NULL';
-=======
     WHERE table_schema='public' AND table_name='guests' AND column_name='delegation_wg'
   ) THEN
     EXECUTE 'UPDATE guests SET region=delegation_wg WHERE region IS NULL AND delegation_wg IS NOT NULL';
@@ -71,13 +56,10 @@ BEGIN
     WHERE table_schema='public' AND table_name='guests' AND column_name='company'
   ) THEN
     EXECUTE 'UPDATE guests SET region=company WHERE region IS NULL AND company IS NOT NULL';
->>>>>>> 50ba541 (Updated project)
   END IF;
 END $$;
 ALTER TABLE guests DROP COLUMN IF EXISTS email;
 ALTER TABLE guests DROP COLUMN IF EXISTS company;
-<<<<<<< HEAD
-=======
 ALTER TABLE guests DROP COLUMN IF EXISTS delegation_wg;
 
 -- Guest roles are independent from events. A guest has one or two ordered roles.
@@ -164,7 +146,6 @@ CREATE CONSTRAINT TRIGGER guests_require_role_trigger
 AFTER INSERT ON guests
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_new_guest_has_role();
->>>>>>> 50ba541 (Updated project)
 
 -- Registration is the many-to-many relationship between a guest and an event.
 -- Attendance status belongs here because the same guest can have a different
@@ -228,8 +209,6 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
   attempts INTEGER NOT NULL DEFAULT 0,
   window_started TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-<<<<<<< HEAD
-=======
 
 -- Public daily programme / schedule.
 CREATE TABLE IF NOT EXISTS schedule_items (
@@ -315,4 +294,3 @@ CREATE INDEX IF NOT EXISTS poll_submissions_guest_idx ON poll_submissions(guest_
 -- any still-current ON_BREAK registration into INSIDE. The app now creates only
 -- CHECK_IN and CHECK_OUT actions.
 UPDATE event_guests SET status='INSIDE',updated_at=now() WHERE status='ON_BREAK';
->>>>>>> 50ba541 (Updated project)

@@ -7,11 +7,7 @@ type EventOption = { id:number; name:string };
 type Result = { kind:"idle"|"good"|"warn"|"bad"; name?:string; message:string; time?:string; eventName?:string };
 
 export default function ScannerClient({ events, initialEventId }:{ events:EventOption[]; initialEventId?:number }) {
-<<<<<<< HEAD
-  const [mode,setMode] = useState<ScanMode>("ENTRY_RETURN");
-=======
   const [mode,setMode] = useState<ScanMode>("CHECK_IN");
->>>>>>> 50ba541 (Updated project)
   const initialId = events.some(e=>e.id===initialEventId) ? initialEventId! : (events[0]?.id ?? 0);
   const [eventId,setEventId] = useState<number>(initialId);
   const [result,setResult] = useState<Result>({kind:"idle",message:events.length?"Ready to scan a badge":"Create an event before scanning"});
@@ -26,11 +22,7 @@ export default function ScannerClient({ events, initialEventId }:{ events:EventO
   useEffect(()=>{
     eventIdRef.current=eventId;
     const selected=events.find(e=>e.id===eventId);
-<<<<<<< HEAD
-    if(selected) setResult({kind:"idle",message:`Ready to scan for ${selected.name}`});
-=======
     if(selected) setResult({kind:"idle",message:`Ready to ${modeRef.current === "CHECK_IN" ? "check in" : "check out"} for ${selected.name}`});
->>>>>>> 50ba541 (Updated project)
   },[eventId,events]);
 
   async function submit(rawToken:string) {
@@ -44,19 +36,11 @@ export default function ScannerClient({ events, initialEventId }:{ events:EventO
       });
       const data = await res.json();
       if (res.ok) {
-<<<<<<< HEAD
-        setResult({kind:"good",name:data.guest.name,message:data.message,eventName:data.event?.name,time:new Date(data.timestamp).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})});
-        if (navigator.vibrate) navigator.vibrate(120);
-      } else {
-        const duplicateCodes = ["ALREADY_INSIDE","ALREADY_ON_BREAK","ALREADY_CHECKED_OUT","SCAN_COOLDOWN","NOT_REGISTERED_FOR_EVENT"];
-        setResult({kind:duplicateCodes.includes(data.code)?"warn":"bad",name:data.guestName,message:data.error || "Scan failed"});
-=======
         setResult({kind:"good",name:data.guest.name,message:data.message,eventName:data.event?.name,time:new Intl.DateTimeFormat("en",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Singapore"}).format(new Date(data.timestamp))});
         if (navigator.vibrate) navigator.vibrate(120);
       } else {
         const warningCodes = ["ALREADY_INSIDE","ALREADY_CHECKED_OUT","SCAN_COOLDOWN","NOT_REGISTERED_FOR_EVENT","EVENT_ENDED"];
         setResult({kind:warningCodes.includes(data.code)?"warn":"bad",name:data.guestName,message:data.error || "Scan failed"});
->>>>>>> 50ba541 (Updated project)
         if (navigator.vibrate) navigator.vibrate([80,70,80]);
       }
     } catch {
@@ -83,18 +67,10 @@ export default function ScannerClient({ events, initialEventId }:{ events:EventO
         );
         setCameraState("Camera active");
       } catch {
-<<<<<<< HEAD
-        setCameraState("Camera unavailable — use manual token below or allow camera access.");
-      }
-    })();
-    return ()=>{ cancelled=true; const s=scannerRef.current; if(s) s.stop().catch(()=>{}); };
-    // Scanner starts once; refs keep the selected event and mode current without restarting the camera.
-=======
         setCameraState("Camera unavailable — use HTTPS, allow camera access, or enter the token manually.");
       }
     })();
     return ()=>{ cancelled=true; const s=scannerRef.current; if(s) s.stop().catch(()=>{}); };
->>>>>>> 50ba541 (Updated project)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
@@ -109,23 +85,13 @@ export default function ScannerClient({ events, initialEventId }:{ events:EventO
         </select>
       </div>
       <div className="mode-grid" role="group" aria-label="Scan mode">
-<<<<<<< HEAD
-        <button className={`mode-btn ${mode==="ENTRY_RETURN"?"active":""}`} onClick={()=>setMode("ENTRY_RETURN")} type="button" disabled={!events.length}>Entry / return</button>
-        <button className={`mode-btn ${mode==="BREAK_OUT"?"active":""}`} onClick={()=>setMode("BREAK_OUT")} type="button" disabled={!events.length}>Break out</button>
-        <button className={`mode-btn ${mode==="CHECK_OUT"?"active":""}`} onClick={()=>setMode("CHECK_OUT")} type="button" disabled={!events.length}>Final exit</button>
-=======
         <button className={`mode-btn ${mode==="CHECK_IN"?"active":""}`} onClick={()=>setMode("CHECK_IN")} type="button" disabled={!events.length}>Check in</button>
         <button className={`mode-btn ${mode==="CHECK_OUT"?"active":""}`} onClick={()=>setMode("CHECK_OUT")} type="button" disabled={!events.length}>Check out</button>
->>>>>>> 50ba541 (Updated project)
       </div>
       <div id="reader" aria-label="QR camera scanner" />
       <p className="small muted">{cameraState}</p>
       <form className="actions" onSubmit={e=>{e.preventDefault(); if(manual.trim()) submit(manual.trim());}}>
-<<<<<<< HEAD
-        <input className="input" style={{flex:1}} placeholder="Manual QR token for testing" value={manual} onChange={e=>setManual(e.target.value)} disabled={!events.length} />
-=======
         <input className="input" style={{flex:1}} placeholder="Manual badge code for testing" value={manual} onChange={e=>setManual(e.target.value)} disabled={!events.length} />
->>>>>>> 50ba541 (Updated project)
         <button className="btn secondary" disabled={!events.length}>Submit token</button>
       </form>
     </section>
@@ -136,17 +102,10 @@ export default function ScannerClient({ events, initialEventId }:{ events:EventO
           {result.name && <div className="name">{result.name}</div>}
           {result.eventName && <div className="small muted" style={{marginTop:4}}>{result.eventName}</div>}
           <div className="message">{result.message}</div>
-<<<<<<< HEAD
-          {result.time && <div style={{marginTop:10,fontWeight:800}}>{result.time}</div>}
-        </div>
-      </div>
-      <p className="small muted" style={{marginBottom:0}}>Duplicate scans, unregistered-for-event badges, and invalid state changes are rejected server-side. “Entry / return” checks in a new guest, returns a guest from break, or warns if they are already inside.</p>
-=======
           {result.time && <div style={{marginTop:10,fontWeight:800}}>{result.time} GMT+8</div>}
         </div>
       </div>
       <p className="small muted" style={{marginBottom:0}}>Only two attendance actions are available: check in and check out. Duplicate scans and unregistered badges are rejected server-side. If the event end time has passed, everyone still inside is checked out automatically.</p>
->>>>>>> 50ba541 (Updated project)
     </aside>
   </div>;
 }

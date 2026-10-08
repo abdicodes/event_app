@@ -1,53 +1,13 @@
 import { sql } from "@/lib/db";
-<<<<<<< HEAD
-import { extractQrToken } from "@/lib/qr";
-import type { AttendanceAction, GuestStatus, ScanMode } from "@/lib/types";
-=======
 import { autoCheckoutExpiredEvents } from "@/lib/events";
 import { resolveGuestCredential } from "@/lib/guest-access";
 import { normalizeGuestStatus, type AttendanceAction, type GuestStatus, type ScanMode } from "@/lib/types";
->>>>>>> 50ba541 (Updated project)
 
 export class ScanError extends Error {
   constructor(public code: string, message: string, public status = 400, public guestName?: string) { super(message); }
 }
 
 function transition(status: GuestStatus, mode: ScanMode): { action: AttendanceAction; next: GuestStatus; message: string } {
-<<<<<<< HEAD
-  if (mode === "ENTRY_RETURN") {
-    if (status === "NOT_ARRIVED") return { action: "CHECK_IN", next: "INSIDE", message: "Checked in successfully" };
-    if (status === "ON_BREAK") return { action: "BREAK_IN", next: "INSIDE", message: "Returned from break" };
-    if (status === "INSIDE") throw new ScanError("ALREADY_INSIDE", "Already checked in — no new record was created", 409);
-    throw new ScanError("ALREADY_CHECKED_OUT", "This guest already completed final checkout for this event", 409);
-  }
-  if (mode === "BREAK_OUT") {
-    if (status === "INSIDE") return { action: "BREAK_OUT", next: "ON_BREAK", message: "Break started" };
-    if (status === "ON_BREAK") throw new ScanError("ALREADY_ON_BREAK", "Guest is already on break", 409);
-    if (status === "NOT_ARRIVED") throw new ScanError("NOT_CHECKED_IN", "Guest has not checked in to this event yet", 409);
-    throw new ScanError("ALREADY_CHECKED_OUT", "Guest already checked out of this event", 409);
-  }
-  if (status === "INSIDE" || status === "ON_BREAK") return { action: "CHECK_OUT", next: "CHECKED_OUT", message: "Final checkout recorded" };
-  if (status === "CHECKED_OUT") throw new ScanError("ALREADY_CHECKED_OUT", "Guest already checked out of this event", 409);
-  throw new ScanError("NOT_CHECKED_IN", "Guest has not checked in to this event yet", 409);
-}
-
-export async function processScan(rawToken: string, mode: ScanMode, scannerLabel: string, eventId: number) {
-  const token = extractQrToken(rawToken);
-  if (!token) throw new ScanError("INVALID_QR", "This QR code is not valid", 400);
-  if (!Number.isInteger(eventId) || eventId < 1) throw new ScanError("INVALID_EVENT", "Select a valid event", 400);
-
-  return sql.begin(async (tx) => {
-    const event = (await tx<{ id:number; name:string }[]>`SELECT id,name FROM events WHERE id=${eventId} LIMIT 1`)[0];
-    if (!event) throw new ScanError("INVALID_EVENT", "The selected event no longer exists", 404);
-
-    // First identify the persistent badge globally.
-    const globalGuest = (await tx<{ id:number; name:string }[]>`
-      SELECT id,name FROM guests WHERE qr_token=${token} LIMIT 1
-    `)[0];
-    if (!globalGuest) throw new ScanError("UNKNOWN_GUEST", "QR code is not registered", 404);
-
-    // Then lock this guest's registration/status for the selected event.
-=======
   if (mode === "CHECK_IN") {
     if (status === "NOT_ARRIVED" || status === "CHECKED_OUT") {
       return { action: "CHECK_IN", next: "INSIDE", message: "Checked in successfully" };
@@ -78,7 +38,6 @@ async function recordAttendanceForGuest(guestId: number, mode: ScanMode, scanner
     `)[0];
     if (!globalGuest) throw new ScanError("UNKNOWN_GUEST", "Guest is not registered", 404);
 
->>>>>>> 50ba541 (Updated project)
     const registration = (await tx<{ status:GuestStatus }[]>`
       SELECT status FROM event_guests
       WHERE event_id=${eventId} AND guest_id=${globalGuest.id}
@@ -99,19 +58,11 @@ async function recordAttendanceForGuest(guestId: number, mode: ScanMode, scanner
       ORDER BY created_at DESC LIMIT 1
     `;
     if (recent[0] && Date.now() - new Date(recent[0].created_at).getTime() < 3000) {
-<<<<<<< HEAD
-      throw new ScanError("SCAN_COOLDOWN", "Badge was just scanned — ignored to prevent a duplicate", 429, globalGuest.name);
-    }
-
-    let next;
-    try { next = transition(registration.status, mode); }
-=======
       throw new ScanError("SCAN_COOLDOWN", "This guest was just updated — ignored to prevent a duplicate", 429, globalGuest.name);
     }
 
     let next;
     try { next = transition(normalizeGuestStatus(registration.status), mode); }
->>>>>>> 50ba541 (Updated project)
     catch (error) {
       if (error instanceof ScanError) error.guestName = globalGuest.name;
       throw error;
@@ -138,11 +89,6 @@ async function recordAttendanceForGuest(guestId: number, mode: ScanMode, scanner
   });
 }
 
-<<<<<<< HEAD
-export async function guestAttendanceRows(eventId: number) {
-  const guests = await sql<{ id:number; name:string; delegation_wg:string|null; status:GuestStatus; qr_token:string }[]>`
-    SELECT g.id,g.name,g.delegation_wg,eg.status,g.qr_token
-=======
 export async function processScan(rawCredential: string, mode: ScanMode, scannerLabel: string, eventId: number) {
   await autoCheckoutExpiredEvents();
   // New badges encode only badge_code. resolveGuestCredential also accepts
@@ -161,43 +107,20 @@ export async function guestAttendanceRows(eventId: number) {
   await autoCheckoutExpiredEvents();
   const guests = await sql<{ id:number; name:string; region:string|null; status:GuestStatus; qr_token:string }[]>`
     SELECT g.id,g.name,g.region,eg.status,g.qr_token
->>>>>>> 50ba541 (Updated project)
     FROM event_guests eg
     JOIN guests g ON g.id=eg.guest_id
     WHERE eg.event_id=${eventId}
     ORDER BY g.name
   `;
   const logs = await sql<{ guest_id:number; action:AttendanceAction; created_at:Date }[]>`
-<<<<<<< HEAD
-    SELECT guest_id,action,created_at FROM attendance_logs WHERE event_id=${eventId} ORDER BY created_at
-=======
     SELECT guest_id,action,created_at
     FROM attendance_logs
     WHERE event_id=${eventId} AND action IN ('CHECK_IN','CHECK_OUT')
     ORDER BY created_at
->>>>>>> 50ba541 (Updated project)
   `;
 
   const rows = guests.map((g) => {
     const gl = logs.filter((l) => l.guest_id === g.id);
-<<<<<<< HEAD
-    const checkIn = gl.find((l) => l.action === "CHECK_IN")?.created_at ?? null;
-    const checkout = [...gl].reverse().find((l) => l.action === "CHECK_OUT")?.created_at ?? null;
-    const lastActivity = gl.length ? gl[gl.length - 1].created_at : null;
-    let awayMs = 0;
-    let breakStart: Date | null = null;
-    for (const l of gl) {
-      if (l.action === "BREAK_OUT") breakStart = new Date(l.created_at);
-      if (l.action === "BREAK_IN" && breakStart) { awayMs += new Date(l.created_at).getTime() - breakStart.getTime(); breakStart = null; }
-    }
-    if (breakStart) awayMs += Date.now() - breakStart.getTime();
-    const end = checkout ?? (checkIn ? new Date() : null);
-    const attendanceMs = checkIn && end ? Math.max(0, end.getTime() - new Date(checkIn).getTime() - awayMs) : 0;
-    return { ...g, checkIn, checkout, lastActivity, awayMs, attendanceMs };
-  });
-
-  const statusRank: Record<GuestStatus, number> = { INSIDE: 0, ON_BREAK: 1, CHECKED_OUT: 2, NOT_ARRIVED: 3 };
-=======
     const checkIns = gl.filter(l => l.action === "CHECK_IN");
     const checkOuts = gl.filter(l => l.action === "CHECK_OUT");
     const checkIn = checkIns[0]?.created_at ?? null;
@@ -219,7 +142,6 @@ export async function guestAttendanceRows(eventId: number) {
   });
 
   const statusRank: Record<GuestStatus, number> = { INSIDE: 0, CHECKED_OUT: 1, NOT_ARRIVED: 2 };
->>>>>>> 50ba541 (Updated project)
   return rows.sort((a,b) => {
     const rankDiff = statusRank[a.status] - statusRank[b.status];
     if (rankDiff) return rankDiff;

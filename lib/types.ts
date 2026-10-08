@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-export type GuestStatus = "NOT_ARRIVED" | "INSIDE" | "ON_BREAK" | "CHECKED_OUT";
-export type ScanMode = "ENTRY_RETURN" | "BREAK_OUT" | "CHECK_OUT";
-export type AttendanceAction = "CHECK_IN" | "BREAK_OUT" | "BREAK_IN" | "CHECK_OUT";
-=======
 import type { RoleCode } from "./roles";
 export type GuestStatus = "NOT_ARRIVED" | "INSIDE" | "CHECKED_OUT";
 export type ScanMode = "CHECK_IN" | "CHECK_OUT";
@@ -19,19 +14,13 @@ export function normalizeGuestStatus(status: unknown): GuestStatus {
   if (status === "CHECKED_OUT") return "CHECKED_OUT";
   return "NOT_ARRIVED";
 }
->>>>>>> 50ba541 (Updated project)
 
 export type Guest = {
   id: number;
   name: string;
-<<<<<<< HEAD
-  delegation_wg: string | null;
-  qr_token: string;
-=======
   region: string | null;
   qr_token: string;
   badge_code: string;
   roles?: RoleCode[];
->>>>>>> 50ba541 (Updated project)
   created_at: string | Date;
 };
