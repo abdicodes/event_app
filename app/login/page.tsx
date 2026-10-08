@@ -1,4 +1,8 @@
 "use client";
+<<<<<<< HEAD
+=======
+import BrandLogo from "@/components/BrandLogo";
+>>>>>>> 50ba541 (Updated project)
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -17,7 +21,11 @@ export default function LoginPage() {
     } finally { setBusy(false); }
   }
   return <div className="login-wrap"><form className="login-card" onSubmit={submit}>
+<<<<<<< HEAD
     <div className="brand"><span className="brand-mark">GF</span><span>Staff access</span></div>
+=======
+    <div className="brand login-brand"><BrandLogo/><span>Staff access</span></div>
+>>>>>>> 50ba541 (Updated project)
     <h1>Event check-in</h1>
     <p className="muted">Sign in on staff devices before scanning guest badges.</p>
     <div className="field" style={{marginTop:20}}><label htmlFor="password">Staff password</label><input id="password" className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required /></div>
