@@ -221,13 +221,10 @@ export default function ScannerClient({
         await scanner.start(
           { facingMode: "environment" },
           {
-            // Keep the same proven camera configuration as the last working scanner.
-            fps: 10,
-            qrbox: (width: number, height: number) => ({
-              width: Math.min(280, width - 30),
-              height: Math.min(280, height - 30),
-            }),
-            aspectRatio: 1.0,
+            // Decode the entire camera frame. A fixed qrbox crops the image before
+            // decoding and was preventing iPhones from seeing badge QRs unless the
+            // code was perfectly centered and at exactly the right distance.
+            fps: 15,
           },
           (decoded: string) => {
             void submit(decoded, "camera");
@@ -235,7 +232,9 @@ export default function ScannerClient({
           () => {},
         );
 
-        if (!cancelled) setCameraState("Camera active");
+        if (!cancelled) {
+          setCameraState("Camera active — place the QR anywhere in the camera view");
+        }
       } catch {
         if (!cancelled) {
           setCameraState(
