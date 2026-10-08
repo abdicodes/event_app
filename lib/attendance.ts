@@ -1,10 +1,18 @@
 import { sql } from "@/lib/db";
 import { autoCheckoutExpiredEvents } from "@/lib/events";
-import { resolveGuestCredential } from "@/lib/guest-access";
+import { extractBadgeCredential } from "@/lib/badge";
 import { normalizeGuestStatus, type AttendanceAction, type GuestStatus, type ScanMode } from "@/lib/types";
 
 export class ScanError extends Error {
-  constructor(public code: string, message: string, public status = 400, public guestName?: string) { super(message); }
+  constructor(
+    public code: string,
+    message: string,
+    public status = 400,
+    public guestName?: string,
+    public details?: { guestId?: number; eventId?: number },
+  ) {
+    super(message);
+  }
 }
 
 function transition(status: GuestStatus, mode: ScanMode): { action: AttendanceAction; next: GuestStatus; message: string } {
@@ -20,68 +28,132 @@ function transition(status: GuestStatus, mode: ScanMode): { action: AttendanceAc
   throw new ScanError("NOT_CHECKED_IN", "Guest has not checked in to this event yet", 409);
 }
 
-async function recordAttendanceForGuest(guestId: number, mode: ScanMode, scannerLabel: string, eventId: number) {
-  if (!Number.isInteger(eventId) || eventId < 1) throw new ScanError("INVALID_EVENT", "Select a valid event", 400);
-  if (!Number.isInteger(guestId) || guestId < 1) throw new ScanError("UNKNOWN_GUEST", "Guest is not registered", 404);
+async function recordAttendanceForCredential(
+  rawCredential: string,
+  mode: ScanMode,
+  scannerLabel: string,
+  eventId: number,
+) {
+  if (!Number.isInteger(eventId) || eventId < 1) {
+    throw new ScanError("INVALID_EVENT", "Select a valid event", 400, undefined, { eventId });
+  }
+
+  const credential = extractBadgeCredential(rawCredential);
+  if (!credential.token && !credential.badgeCode) {
+    throw new ScanError("UNKNOWN_GUEST", "QR code or badge code is not registered", 404, undefined, { eventId });
+  }
 
   return sql.begin(async (tx) => {
-    const event = (await tx<{ id:number; name:string; starts_at:Date|null; ends_at:Date|null }[]>`
-      SELECT id,name,starts_at,ends_at FROM events WHERE id=${eventId} LIMIT 1
+    const event = (await tx<{ id: number; name: string; starts_at: Date | null; ends_at: Date | null }[]>`
+      SELECT id,name,starts_at,ends_at
+      FROM events
+      WHERE id=${eventId}
+      LIMIT 1
     `)[0];
-    if (!event) throw new ScanError("INVALID_EVENT", "The selected event no longer exists", 404);
-    if (event.ends_at && new Date(event.ends_at).getTime() <= Date.now()) {
-      throw new ScanError("EVENT_ENDED", "This event has ended and cannot accept new check-ins.", 409);
+
+    if (!event) {
+      throw new ScanError("INVALID_EVENT", "The selected event no longer exists", 404, undefined, { eventId });
     }
 
-    const globalGuest = (await tx<{ id:number; name:string }[]>`
-      SELECT id,name FROM guests WHERE id=${guestId} LIMIT 1
-    `)[0];
-    if (!globalGuest) throw new ScanError("UNKNOWN_GUEST", "Guest is not registered", 404);
+    if (event.ends_at && new Date(event.ends_at).getTime() <= Date.now()) {
+      throw new ScanError("EVENT_ENDED", "This event has ended and cannot accept new check-ins.", 409, undefined, { eventId });
+    }
 
-    const registration = (await tx<{ status:GuestStatus }[]>`
-      SELECT status FROM event_guests
-      WHERE event_id=${eventId} AND guest_id=${globalGuest.id}
-      FOR UPDATE
-    `)[0];
-    if (!registration) {
-      throw new ScanError(
-        "NOT_REGISTERED_FOR_EVENT",
-        "Guest is recognized, but is not registered for the selected event — no record was created",
-        409,
-        globalGuest.name
-      );
+    // Registration is now the primary lookup. A successful scan must match both
+    // the scanned credential and the selected event in event_guests.
+    let guest: { id:number; name:string; status:unknown } | undefined;
+    if (credential.badgeCode) {
+      guest = (await tx<{ id:number; name:string; status:unknown }[]>`
+        SELECT g.id,g.name,eg.status
+        FROM event_guests eg
+        JOIN guests g ON g.id=eg.guest_id
+        WHERE eg.event_id=${eventId}
+          AND g.badge_code=${credential.badgeCode}
+        LIMIT 1
+        FOR UPDATE OF eg
+      `)[0];
+    } else if (credential.token) {
+      guest = (await tx<{ id:number; name:string; status:unknown }[]>`
+        SELECT g.id,g.name,eg.status
+        FROM event_guests eg
+        JOIN guests g ON g.id=eg.guest_id
+        WHERE eg.event_id=${eventId}
+          AND g.qr_token=${credential.token}
+        LIMIT 1
+        FOR UPDATE OF eg
+      `)[0];
+    }
+
+    if (!guest) {
+      let knownGuest: { id:number; name:string } | undefined;
+      if (credential.badgeCode) {
+        knownGuest = (await tx<{ id:number; name:string }[]>`
+          SELECT id,name FROM guests WHERE badge_code=${credential.badgeCode} LIMIT 1
+        `)[0];
+      } else if (credential.token) {
+        knownGuest = (await tx<{ id:number; name:string }[]>`
+          SELECT id,name FROM guests WHERE qr_token=${credential.token} LIMIT 1
+        `)[0];
+      }
+
+      if (knownGuest) {
+        throw new ScanError(
+          "NOT_REGISTERED_FOR_EVENT",
+          "Guest is recognized, but is not registered for the selected event — no record was created",
+          409,
+          knownGuest.name,
+          { guestId: knownGuest.id, eventId },
+        );
+      }
+
+      throw new ScanError("UNKNOWN_GUEST", "QR code or badge code is not registered", 404, undefined, { eventId });
     }
 
     const recent = await tx<{ created_at: Date }[]>`
-      SELECT created_at FROM attendance_logs
-      WHERE event_id=${eventId} AND guest_id=${globalGuest.id}
-      ORDER BY created_at DESC LIMIT 1
+      SELECT created_at
+      FROM attendance_logs
+      WHERE event_id=${eventId} AND guest_id=${guest.id}
+      ORDER BY created_at DESC
+      LIMIT 1
     `;
+
     if (recent[0] && Date.now() - new Date(recent[0].created_at).getTime() < 3000) {
-      throw new ScanError("SCAN_COOLDOWN", "This guest was just updated — ignored to prevent a duplicate", 429, globalGuest.name);
+      throw new ScanError(
+        "SCAN_COOLDOWN",
+        "This guest was just updated — ignored to prevent a duplicate",
+        429,
+        guest.name,
+        { guestId: guest.id, eventId },
+      );
     }
 
     let next;
-    try { next = transition(normalizeGuestStatus(registration.status), mode); }
-    catch (error) {
-      if (error instanceof ScanError) error.guestName = globalGuest.name;
+    try {
+      next = transition(normalizeGuestStatus(guest.status), mode);
+    } catch (error) {
+      if (error instanceof ScanError) {
+        error.guestName = guest.name;
+        error.details = { guestId: guest.id, eventId };
+      }
       throw error;
     }
 
     await tx`
       UPDATE event_guests
       SET status=${next.next}, updated_at=now()
-      WHERE event_id=${eventId} AND guest_id=${globalGuest.id}
+      WHERE event_id=${eventId} AND guest_id=${guest.id}
     `;
+
     const logs = await tx<{ created_at: Date }[]>`
-      INSERT INTO attendance_logs (event_id, guest_id, action, scanner_label)
-      VALUES (${eventId}, ${globalGuest.id}, ${next.action}, ${scannerLabel.slice(0,80)})
+      INSERT INTO attendance_logs(event_id, guest_id, action, scanner_label)
+      VALUES(${eventId}, ${guest.id}, ${next.action}, ${scannerLabel.slice(0,80)})
       RETURNING created_at
     `;
+
     return {
       ok: true,
       event: { id: event.id, name: event.name },
-      guest: { id: globalGuest.id, name: globalGuest.name, status: next.next },
+      guest: { id: guest.id, name: guest.name, status: next.next },
       action: next.action,
       message: next.message,
       timestamp: logs[0].created_at,
@@ -89,18 +161,61 @@ async function recordAttendanceForGuest(guestId: number, mode: ScanMode, scanner
   });
 }
 
+async function recordAttendanceForGuestId(
+  guestId: number,
+  mode: ScanMode,
+  scannerLabel: string,
+  eventId: number,
+) {
+  if (!Number.isInteger(eventId) || eventId < 1) throw new ScanError("INVALID_EVENT", "Select a valid event", 400);
+  if (!Number.isInteger(guestId) || guestId < 1) throw new ScanError("UNKNOWN_GUEST", "Guest is not registered", 404);
+
+  return sql.begin(async (tx) => {
+    const row = (await tx<{ id:number; name:string; status:unknown; event_name:string; ends_at:Date|null }[]>`
+      SELECT g.id,g.name,eg.status,e.name AS event_name,e.ends_at
+      FROM event_guests eg
+      JOIN guests g ON g.id=eg.guest_id
+      JOIN events e ON e.id=eg.event_id
+      WHERE eg.event_id=${eventId} AND eg.guest_id=${guestId}
+      FOR UPDATE OF eg
+    `)[0];
+
+    if (!row) throw new ScanError("NOT_REGISTERED_FOR_EVENT", "Guest is not registered for this event", 409, undefined, {guestId,eventId});
+    if (row.ends_at && new Date(row.ends_at).getTime() <= Date.now()) throw new ScanError("EVENT_ENDED", "This event has ended and cannot accept new check-ins.", 409, row.name, {guestId,eventId});
+
+    let next;
+    try { next = transition(normalizeGuestStatus(row.status), mode); }
+    catch (error) {
+      if (error instanceof ScanError) { error.guestName=row.name; error.details={guestId,eventId}; }
+      throw error;
+    }
+
+    const recent = await tx<{ created_at:Date }[]>`
+      SELECT created_at FROM attendance_logs
+      WHERE event_id=${eventId} AND guest_id=${guestId}
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    if(recent[0] && Date.now()-new Date(recent[0].created_at).getTime()<3000){
+      throw new ScanError("SCAN_COOLDOWN","This guest was just updated — ignored to prevent a duplicate",429,row.name,{guestId,eventId});
+    }
+
+    await tx`UPDATE event_guests SET status=${next.next},updated_at=now() WHERE event_id=${eventId} AND guest_id=${guestId}`;
+    const logs=await tx<{created_at:Date}[]>`
+      INSERT INTO attendance_logs(event_id,guest_id,action,scanner_label)
+      VALUES(${eventId},${guestId},${next.action},${scannerLabel.slice(0,80)}) RETURNING created_at
+    `;
+    return {ok:true,event:{id:eventId,name:row.event_name},guest:{id:guestId,name:row.name,status:next.next},action:next.action,message:next.message,timestamp:logs[0].created_at};
+  });
+}
+
 export async function processScan(rawCredential: string, mode: ScanMode, scannerLabel: string, eventId: number) {
   await autoCheckoutExpiredEvents();
-  // New badges encode only badge_code. resolveGuestCredential also accepts
-  // legacy raw tokens / old /q/<token> URLs so previously printed badges keep working.
-  const guest = await resolveGuestCredential(rawCredential);
-  if (!guest) throw new ScanError("UNKNOWN_GUEST", "QR code or badge code is not registered", 404);
-  return recordAttendanceForGuest(guest.id, mode, scannerLabel, eventId);
+  return recordAttendanceForCredential(rawCredential, mode, scannerLabel, eventId);
 }
 
 export async function processManualCheckIn(guestId: number, eventId: number) {
   await autoCheckoutExpiredEvents();
-  return recordAttendanceForGuest(guestId, "CHECK_IN", "Manual staff check-in", eventId);
+  return recordAttendanceForGuestId(guestId, "CHECK_IN", "Manual staff check-in", eventId);
 }
 
 export async function guestAttendanceRows(eventId: number) {

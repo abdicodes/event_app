@@ -10,6 +10,7 @@ type Result = {
   message: string;
   time?: string;
   eventName?: string;
+  debugRef?: string;
 };
 
 export default function ScannerClient({
@@ -183,6 +184,9 @@ export default function ScannerClient({
           // Showing the submitted event on errors makes it immediately obvious if
           // staff accidentally selected the wrong event.
           eventName: submittedEventName,
+          debugRef: data.guestId || data.eventId
+            ? `Guest ID ${data.guestId ?? "?"} · Event ID ${data.eventId ?? submittedEventId}`
+            : undefined,
         },
         credential,
       );
@@ -328,6 +332,7 @@ export default function ScannerClient({
             {result.eventName && <div className="small muted scan-event-name">{result.eventName}</div>}
             <div className="message">{result.message}</div>
             {result.time && <div className="scan-result-time">{result.time} GMT+8</div>}
+            {result.debugRef && <div className="small muted" style={{ marginTop: 8 }}>{result.debugRef}</div>}
             {awaitingAck && (
               <button className="btn accent scan-ok-btn" type="button" onClick={acknowledgeResult}>
                 OK — next scan
