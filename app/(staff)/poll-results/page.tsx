@@ -26,6 +26,12 @@ type OptionRow = {
   votes: number;
 };
 
+type CommentRow = {
+  poll_id: number;
+  comment_text: string;
+  created_at: Date;
+};
+
 export default async function PollResultsPage() {
   const polls = await sql<PollRow[]>`
     SELECT
@@ -75,12 +81,34 @@ export default async function PollResultsPage() {
       po.id
   `;
 
+  const comments = await sql<CommentRow[]>`
+    SELECT
+      ps.poll_id,
+      ps.comment_text,
+      ps.created_at
+    FROM poll_submissions ps
+    WHERE ps.comment_text IS NOT NULL
+      AND btrim(ps.comment_text) <> ''
+    ORDER BY
+      ps.poll_id,
+      ps.created_at,
+      ps.guest_id
+  `;
+
   const optionsByPoll = new Map<number, OptionRow[]>();
 
   for (const option of options) {
     const current = optionsByPoll.get(option.poll_id) ?? [];
     current.push(option);
     optionsByPoll.set(option.poll_id, current);
+  }
+
+  const commentsByPoll = new Map<number, CommentRow[]>();
+
+  for (const comment of comments) {
+    const current = commentsByPoll.get(comment.poll_id) ?? [];
+    current.push(comment);
+    commentsByPoll.set(comment.poll_id, current);
   }
 
   const fmt = (value: Date | null) =>
@@ -92,8 +120,8 @@ export default async function PollResultsPage() {
         <div>
           <h1>Poll results</h1>
           <p>
-            View total submitted votes, results for every option, and how many
-            registered participants have not voted.
+            View total submitted votes, results for every option, how many
+            registered participants have not voted, and voter comments.
           </p>
         </div>
 
@@ -103,18 +131,25 @@ export default async function PollResultsPage() {
       </div>
 
       <div className="event-list">
-        {polls.map((poll) => {
-          const pollOptions = optionsByPoll.get(poll.id) ?? [];
+        {polls.map(poll => {
+          const pollOptions =
+            optionsByPoll.get(poll.id) ?? [];
+
+          const pollComments =
+            commentsByPoll.get(poll.id) ?? [];
 
           const turnout =
             poll.registered > 0
-              ? Math.round((poll.voted / poll.registered) * 100)
+              ? Math.round(
+                  (poll.voted / poll.registered) * 100,
+                )
               : 0;
 
           const rule =
             poll.choice_mode === "SINGLE"
               ? "One answer"
-              : poll.min_selections === poll.max_selections
+              : poll.min_selections ===
+                  poll.max_selections
                 ? `${poll.min_selections} answers required`
                 : `${poll.min_selections}–${poll.max_selections} answers`;
 
@@ -127,7 +162,8 @@ export default async function PollResultsPage() {
                   <p>
                     {poll.description || "No description"}
                     <br />
-                    Open: {fmt(poll.starts_at)} · Close: {fmt(poll.ends_at)} (GMT+8)
+                    Open: {fmt(poll.starts_at)} · Close:{" "}
+                    {fmt(poll.ends_at)} (GMT+8)
                     <br />
                     Answer rule: <strong>{rule}</strong>
                   </p>
@@ -136,23 +172,39 @@ export default async function PollResultsPage() {
 
               <div className="grid stats four-stats">
                 <div className="card">
-                  <div className="stat-label">Registered</div>
-                  <div className="stat-value">{poll.registered}</div>
+                  <div className="stat-label">
+                    Registered
+                  </div>
+                  <div className="stat-value">
+                    {poll.registered}
+                  </div>
                 </div>
 
                 <div className="card">
-                  <div className="stat-label">Votes submitted</div>
-                  <div className="stat-value">{poll.voted}</div>
+                  <div className="stat-label">
+                    Votes submitted
+                  </div>
+                  <div className="stat-value">
+                    {poll.voted}
+                  </div>
                 </div>
 
                 <div className="card">
-                  <div className="stat-label">Not voted</div>
-                  <div className="stat-value">{poll.not_voted}</div>
+                  <div className="stat-label">
+                    Not voted
+                  </div>
+                  <div className="stat-value">
+                    {poll.not_voted}
+                  </div>
                 </div>
 
                 <div className="card">
-                  <div className="stat-label">Turnout</div>
-                  <div className="stat-value">{turnout}%</div>
+                  <div className="stat-label">
+                    Turnout
+                  </div>
+                  <div className="stat-value">
+                    {turnout}%
+                  </div>
                 </div>
               </div>
 
@@ -168,10 +220,12 @@ export default async function PollResultsPage() {
                   </thead>
 
                   <tbody>
-                    {pollOptions.map((option) => (
+                    {pollOptions.map(option => (
                       <tr key={option.id}>
                         <td>
-                          <strong>{option.label}</strong>
+                          <strong>
+                            {option.label}
+                          </strong>
                         </td>
                         <td>{option.votes}</td>
                       </tr>
@@ -179,8 +233,12 @@ export default async function PollResultsPage() {
 
                     {!pollOptions.length && (
                       <tr>
-                        <td colSpan={2} className="muted">
-                          No options found for this poll.
+                        <td
+                          colSpan={2}
+                          className="muted"
+                        >
+                          No options found for this
+                          poll.
                         </td>
                       </tr>
                     )}
@@ -189,11 +247,71 @@ export default async function PollResultsPage() {
               </div>
 
               {poll.choice_mode === "MULTIPLE" && (
-                <p className="small muted" style={{ marginBottom: 0 }}>
-                  This poll allows multiple answers, so the option vote totals
-                  can add up to more than the number of submitted votes.
+                <p
+                  className="small muted"
+                  style={{ marginBottom: 0 }}
+                >
+                  This poll allows multiple answers, so
+                  the option vote totals can add up to
+                  more than the number of submitted
+                  votes.
                 </p>
               )}
+
+              <div style={{ height: 16 }} />
+
+              <details
+                className="card"
+                style={{
+                  padding: 14,
+                  marginBottom: 0,
+                }}
+              >
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Comments ({pollComments.length})
+                </summary>
+
+                {pollComments.length ? (
+                  <ol
+                    style={{
+                      marginTop: 14,
+                      marginBottom: 0,
+                      paddingLeft: 24,
+                    }}
+                  >
+                    {pollComments.map(
+                      (comment, index) => (
+                        <li
+                          key={`${poll.id}-${index}`}
+                          style={{
+                            marginBottom:
+                              index ===
+                              pollComments.length - 1
+                                ? 0
+                                : 14,
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {comment.comment_text}
+                        </li>
+                      ),
+                    )}
+                  </ol>
+                ) : (
+                  <p
+                    className="small muted"
+                    style={{ marginBottom: 0 }}
+                  >
+                    No comments were submitted for this
+                    poll.
+                  </p>
+                )}
+              </details>
             </article>
           );
         })}
