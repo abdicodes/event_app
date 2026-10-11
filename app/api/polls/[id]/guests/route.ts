@@ -1,260 +1,56 @@
 import { NextResponse } from "next/server";
-import { assertSameOrigin } from "@/lib/auth";
+import { assertSameOrigin, requireStaffApi } from "@/lib/auth";
 import { sql } from "@/lib/db";
-import { resolveGuestCredential } from "@/lib/guest-access";
-import { validateSelectionCount } from "@/lib/polls";
 
-type VoteRequestBody = {
-  credential?: unknown;
-  optionId?: unknown;
-  optionIds?: unknown;
-  commentText?: unknown;
-};
+function id(v:string){const n=Number(v);return Number.isInteger(n)&&n>0?n:null;}
 
-const POSTGRES_INT4_OID = 23;
-const MAX_COMMENT_WORDS = 400;
-const MAX_COMMENT_CHARACTERS = 8000;
+export async function POST(request:Request,{params}:{params:Promise<{id:string}>}){
+  if(!(await requireStaffApi()))return NextResponse.json({error:"Staff login required"},{status:401});
+  if(!(await assertSameOrigin(request)))return NextResponse.json({error:"Invalid request origin"},{status:403});
+  const pollId=id((await params).id),b=await request.json().catch(()=>({}));
+  if(!pollId||!(await sql`SELECT 1 FROM polls WHERE id=${pollId}`)[0])return NextResponse.json({error:"Poll not found"},{status:404});
 
-function countWords(value: string) {
-  const text = value.trim();
-  return text ? text.split(/\s+/u).length : 0;
+  if(b.all===true){
+    const rows=await sql`INSERT INTO poll_guests(poll_id,guest_id) SELECT ${pollId},id FROM guests ON CONFLICT DO NOTHING RETURNING guest_id`;
+    return NextResponse.json({ok:true,registered:rows.length});
+  }
+
+  if(typeof b.region==="string"&&b.region.trim()){
+    const group=b.region.trim();
+    const rows=await sql`INSERT INTO poll_guests(poll_id,guest_id) SELECT ${pollId},id FROM guests WHERE region=${group} ON CONFLICT DO NOTHING RETURNING guest_id`;
+    return NextResponse.json({ok:true,registered:rows.length});
+  }
+
+  const guestId=Number(b.guestId);
+  if(!Number.isInteger(guestId)||guestId<1)return NextResponse.json({error:"Invalid guest"},{status:400});
+  if(!(await sql`SELECT 1 FROM guests WHERE id=${guestId}`)[0])return NextResponse.json({error:"Guest not found"},{status:404});
+  await sql`INSERT INTO poll_guests(poll_id,guest_id) VALUES(${pollId},${guestId}) ON CONFLICT DO NOTHING`;
+  return NextResponse.json({ok:true});
 }
 
-export async function POST(
-  request: Request,
-  {
-    params,
-  }: {
-    params: Promise<{ id: string }>;
-  },
-) {
-  if (!(await assertSameOrigin(request))) {
-    return NextResponse.json(
-      { error: "Invalid request origin" },
-      { status: 403 },
-    );
-  }
+export async function DELETE(request:Request,{params}:{params:Promise<{id:string}>}){
+  if(!(await requireStaffApi()))return NextResponse.json({error:"Staff login required"},{status:401});
+  if(!(await assertSameOrigin(request)))return NextResponse.json({error:"Invalid request origin"},{status:403});
+  const pollId=id((await params).id),b=await request.json().catch(()=>({}));
+  if(!pollId)return NextResponse.json({error:"Invalid request"},{status:400});
 
-  const pollId = Number((await params).id);
-
-  const body = (
-    await request.json().catch(() => ({}))
-  ) as VoteRequestBody;
-
-  const rawOptionIds: unknown[] =
-    Array.isArray(body.optionIds)
-      ? body.optionIds
-      : body.optionId !== undefined
-        ? [body.optionId]
-        : [];
-
-  const optionIds: number[] = Array.from(
-    new Set(
-      rawOptionIds
-        .map((value: unknown) => Number(value))
-        .filter(
-          (value: number) =>
-            Number.isInteger(value) && value > 0,
-        ),
-    ),
-  );
-
-  const commentText =
-    typeof body.commentText === "string"
-      ? body.commentText.trim()
-      : "";
-
-  if (
-    !Number.isInteger(pollId) ||
-    pollId < 1 ||
-    optionIds.length < 1
-  ) {
-    return NextResponse.json(
-      { error: "Invalid vote request" },
-      { status: 400 },
-    );
-  }
-
-  if (countWords(commentText) > MAX_COMMENT_WORDS) {
-    return NextResponse.json(
-      {
-        error: `Comment cannot exceed ${MAX_COMMENT_WORDS} words`,
-      },
-      { status: 400 },
-    );
-  }
-
-  if (commentText.length > MAX_COMMENT_CHARACTERS) {
-    return NextResponse.json(
-      { error: "Comment is too long" },
-      { status: 400 },
-    );
-  }
-
-  const guest = await resolveGuestCredential(
-    typeof body.credential === "string"
-      ? body.credential
-      : "",
-  );
-
-  if (!guest) {
-    return NextResponse.json(
-      { error: "Badge not recognized" },
-      { status: 404 },
-    );
-  }
-
-  try {
-    const result = await sql.begin(async tx => {
-      const poll = (
-        await tx<{
-          id: number;
-          choice_mode: "SINGLE" | "MULTIPLE";
-          min_selections: number;
-          max_selections: number;
-        }[]>`
-          SELECT
-            p.id,
-            p.choice_mode,
-            p.min_selections,
-            p.max_selections
-          FROM polls p
-          JOIN poll_guests pg
-            ON pg.poll_id=p.id
-            AND pg.guest_id=${guest.id}
-          WHERE p.id=${pollId}
-            AND (
-              p.starts_at IS NULL
-              OR p.starts_at<=now()
-            )
-            AND (
-              p.ends_at IS NULL
-              OR p.ends_at>=now()
-            )
-          FOR UPDATE
-        `
-      )[0];
-
-      if (!poll) {
-        throw Object.assign(
-          new Error(
-            "You are not registered for this poll, or voting is not currently open",
-          ),
-          { status: 403 },
-        );
-      }
-
-      if (
-        (
-          await tx`
-            SELECT 1
-            FROM poll_submissions
-            WHERE poll_id=${pollId}
-              AND guest_id=${guest.id}
-            FOR UPDATE
-          `
-        )[0]
-      ) {
-        throw Object.assign(
-          new Error(
-            "Your vote has already been submitted",
-          ),
-          { status: 409 },
-        );
-      }
-
-      const countError =
-        validateSelectionCount(
-          poll.choice_mode,
-          optionIds.length,
-          poll.min_selections,
-          poll.max_selections,
-        );
-
-      if (countError) {
-        throw Object.assign(
-          new Error(countError),
-          { status: 400 },
-        );
-      }
-
-      const validOptions =
-        await tx<{ id: number }[]>`
-          SELECT id
-          FROM poll_options
-          WHERE poll_id=${pollId}
-            AND id = ANY(
-              ${tx.array(
-                optionIds,
-                POSTGRES_INT4_OID,
-              )}
-            )
-        `;
-
-      if (
-        validOptions.length !==
-        optionIds.length
-      ) {
-        throw Object.assign(
-          new Error(
-            "One or more selected options are invalid",
-          ),
-          { status: 400 },
-        );
-      }
-
-      for (const optionId of optionIds) {
-        await tx`
-          INSERT INTO poll_votes(
-            poll_id,
-            guest_id,
-            option_id
-          )
-          VALUES(
-            ${pollId},
-            ${guest.id},
-            ${optionId}
-          )
-        `;
-      }
-
-      await tx`
-        INSERT INTO poll_submissions(
-          poll_id,
-          guest_id,
-          comment_text
+  if(b.all===true){
+    const rows=await sql<{guest_id:number}[]>`
+      DELETE FROM poll_guests pg
+      WHERE pg.poll_id=${pollId}
+        AND NOT EXISTS(
+          SELECT 1 FROM poll_submissions ps
+          WHERE ps.poll_id=pg.poll_id AND ps.guest_id=pg.guest_id
         )
-        VALUES(
-          ${pollId},
-          ${guest.id},
-          ${commentText || null}
-        )
-      `;
-
-      return { ok: true };
-    });
-
-    return NextResponse.json(result);
-  } catch (error: any) {
-    if (error?.code === "23505") {
-      return NextResponse.json(
-        {
-          error:
-            "Your vote has already been submitted",
-        },
-        { status: 409 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        error:
-          error?.message ||
-          "Could not submit vote",
-      },
-      {
-        status: error?.status || 500,
-      },
-    );
+      RETURNING guest_id
+    `;
+    const remaining=(await sql<{count:number}[]>`SELECT COUNT(*)::int count FROM poll_guests WHERE poll_id=${pollId}`)[0]?.count ?? 0;
+    return NextResponse.json({ok:true,unregistered:rows.length,skipped:remaining});
   }
+
+  const guestId=Number(b.guestId);
+  if(!Number.isInteger(guestId)||guestId<1)return NextResponse.json({error:"Invalid request"},{status:400});
+  if((await sql`SELECT 1 FROM poll_submissions WHERE poll_id=${pollId} AND guest_id=${guestId}`)[0])return NextResponse.json({error:"A vote has already been submitted for this participant"},{status:409});
+  await sql`DELETE FROM poll_guests WHERE poll_id=${pollId} AND guest_id=${guestId}`;
+  return NextResponse.json({ok:true});
 }
