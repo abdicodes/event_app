@@ -328,7 +328,26 @@ export default function VotesClient() {
             <article className="poll-card" key={poll.id}>
               <h3>{poll.title}</h3>
 
-              {poll.description && <p>{poll.description}</p>}
+              {poll.description && (
+                <div
+                  className="field"
+                  style={{ marginTop: 12, marginBottom: 12 }}
+                >
+                  <label>Description</label>
+
+                  <textarea
+                    className="textarea"
+                    rows={6}
+                    value={poll.description}
+                    readOnly
+                    aria-label={`${poll.title} description`}
+                    style={{
+                      resize: "vertical",
+                      cursor: "default",
+                    }}
+                  />
+                </div>
+              )}
 
               <div className="small muted poll-rule">
                 {instruction}
