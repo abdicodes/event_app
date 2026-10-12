@@ -82,13 +82,16 @@ export default function PollManager() {
       <div className="field">
         <label>Description (optional)</label>
 
-        <textarea
-          className="textarea"
-          name="description"
-          maxLength={500}
-          rows={6}
-          placeholder="Enter the poll description"
-        />
+      <textarea
+  className="textarea"
+  name="description"
+  rows={10}
+  placeholder="Enter the poll description"
+  style={{
+    minHeight: "220px",
+    resize: "vertical",
+  }}
+/>
       </div>
 
       <div style={{ height: 10 }} />

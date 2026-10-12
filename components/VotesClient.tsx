@@ -402,7 +402,7 @@ export default function VotesClient() {
                     style={{ marginTop: 16 }}
                   >
                     <label htmlFor={`poll-comment-${poll.id}`}>
-                      Comment{" "}
+                      Amendments {" "}
                       <span className="small muted">(optional)</span>
                     </label>
 

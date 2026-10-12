@@ -13,7 +13,10 @@ export type PollInput = {
 
 export function parsePollInput(body: any): { value?: PollInput; error?: string } {
   const title = typeof body?.title === "string" ? body.title.trim() : "";
-  const description = typeof body?.description === "string" ? body.description.trim() : "";
+ const description =
+  typeof body?.description === "string"
+    ? body.description.trim()
+    : "";
   const options = Array.isArray(body?.options)
     ? body.options.map((v: any) => String(v).trim()).filter(Boolean)
     : [];
@@ -26,7 +29,7 @@ export function parsePollInput(body: any): { value?: PollInput; error?: string }
   const maxSelections = choiceMode === "SINGLE" ? 1 : requestedMax;
 
   if (title.length < 2 || title.length > 160) return { error: "Poll title must be 2–160 characters" };
-  if (description.length > 500) return { error: "Description is too long" };
+
   if (options.length < 2 || options.length > 20 || options.some((v: string) => v.length > 160)) {
     return { error: "Provide between 2 and 20 valid options" };
   }
