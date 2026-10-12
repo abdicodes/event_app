@@ -417,7 +417,7 @@ export default function VotesClient() {
                           [poll.id]: e.target.value,
                         }))
                       }
-                      placeholder="Add a comment about your vote (up to 400 words)"
+                      placeholder="Add your suggested amendment about your vote (up to 400 words)"
                     />
 
                     <span
