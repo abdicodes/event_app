@@ -15,15 +15,10 @@ type Poll = {
   options: { id: number; label: string }[];
 };
 
-type Guest = { name: string; region?: string | null };
-
-const MAX_COMMENT_WORDS = 400;
-const MAX_COMMENT_CHARACTERS = 8000;
-
-function countWords(value: string) {
-  const text = value.trim();
-  return text ? text.split(/\s+/u).length : 0;
-}
+type Guest = {
+  name: string;
+  region?: string | null;
+};
 
 export default function VotesClient() {
   const [credential, setCredential] = useState("");
@@ -31,8 +26,8 @@ export default function VotesClient() {
   const [polls, setPolls] = useState<Poll[]>([]);
   const [message, setMessage] = useState("");
   const [camera, setCamera] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [selections, setSelections] = useState<Record<number, number[]>>({});
-  const [comments, setComments] = useState<Record<number, string>>({});
   const scannerRef = useRef<any>(null);
 
   async function identify(value: string) {
@@ -50,7 +45,6 @@ export default function VotesClient() {
       setGuest(null);
       setPolls([]);
       setSelections({});
-      setComments({});
       setMessage(data.error || "Could not identify badge");
       return;
     }
@@ -59,7 +53,6 @@ export default function VotesClient() {
     setGuest(data.guest);
     setPolls(data.polls);
     setSelections({});
-    setComments({});
 
     if (!data.polls.length) {
       setMessage(
@@ -95,7 +88,10 @@ export default function VotesClient() {
 
       await scanner.start(
         { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 240, height: 240 } },
+        {
+          fps: 10,
+          qrbox: { width: 240, height: 240 },
+        },
         async decoded => {
           await scanner.stop().catch(() => {});
           scannerRef.current = null;
@@ -166,56 +162,54 @@ export default function VotesClient() {
     );
   }
 
-  async function vote(poll: Poll) {
-    const optionIds = selections[poll.id] || [];
+  async function submitAllVotes() {
+    const remainingPolls = polls.filter(poll => !poll.voted);
 
-    if (!validCount(poll)) {
+    if (!remainingPolls.length) {
+      setMessage("There are no remaining votes to submit.");
+      return;
+    }
+
+    const incompletePoll = remainingPolls.find(
+      poll => !validCount(poll),
+    );
+
+    if (incompletePoll) {
       setMessage(
-        poll.min_selections === poll.max_selections
-          ? `Select exactly ${poll.min_selections} option${poll.min_selections === 1 ? "" : "s"}.`
-          : `Select between ${poll.min_selections} and ${poll.max_selections} options.`,
+        `Please complete "${incompletePoll.title}" before submitting all votes.`,
       );
       return;
     }
 
-    const commentText = (comments[poll.id] || "").trim();
-    const commentWords = countWords(commentText);
+    setSubmitting(true);
+    setMessage("");
 
-    if (commentWords > MAX_COMMENT_WORDS) {
-      setMessage(
-        `Comment cannot exceed ${MAX_COMMENT_WORDS} words.`,
-      );
-      return;
-    }
-
-    if (commentText.length > MAX_COMMENT_CHARACTERS) {
-      setMessage("Comment is too long.");
-      return;
-    }
-
-    const res = await fetch(
-      `/api/public/polls/${poll.id}/vote`,
-      {
+    try {
+      const res = await fetch("/api/public/polls/vote-all", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           credential,
-          optionIds,
-          commentText: commentText || null,
+          votes: remainingPolls.map(poll => ({
+            pollId: poll.id,
+            optionIds: selections[poll.id] || [],
+          })),
         }),
-      },
-    );
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    setMessage(
-      res.ok
-        ? "Vote submitted successfully."
-        : data.error || "Could not submit vote",
-    );
+      if (!res.ok) {
+        setMessage(
+          data.error || "Could not submit all votes",
+        );
+        return;
+      }
 
-    if (res.ok) {
       await identify(credential);
+      setMessage("All votes submitted successfully.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -252,13 +246,18 @@ export default function VotesClient() {
         <div
           id="guest-reader"
           className="guest-reader"
-          style={{ display: camera ? "block" : "none" }}
+          style={{
+            display: camera ? "block" : "none",
+          }}
         />
 
         <details className="manual-badge-fallback">
           <summary>Enter badge code instead</summary>
 
-          <div className="guest-identify" style={{ marginTop: 12 }}>
+          <div
+            className="guest-identify"
+            style={{ marginTop: 12 }}
+          >
             <input
               className="input"
               value={credential}
@@ -289,18 +288,30 @@ export default function VotesClient() {
     );
   }
 
+  const remainingPolls = polls.filter(poll => !poll.voted);
+  const allRemainingValid =
+    remainingPolls.length > 0 &&
+    remainingPolls.every(poll => validCount(poll));
+
   return (
     <div className="public-card">
       <div className="voter-identity">
         <span className="small muted">Voting as</span>
         <h2>{guest.name}</h2>
-        {guest.region && <span className="muted">{guest.region}</span>}
+
+        {guest.region && (
+          <span className="muted">
+            {guest.region}
+          </span>
+        )}
       </div>
 
       {message && (
         <div
           className={`notice ${
-            message.startsWith("Vote submitted") ? "good" : "warn"
+            message.startsWith("All votes submitted")
+              ? "good"
+              : "warn"
           }`}
           style={{ marginTop: 14 }}
         >
@@ -311,11 +322,6 @@ export default function VotesClient() {
       <div className="poll-stack">
         {polls.map(poll => {
           const selected = selections[poll.id] || [];
-          const commentText = comments[poll.id] || "";
-          const commentWords = countWords(commentText);
-          const commentTooLong =
-            commentWords > MAX_COMMENT_WORDS ||
-            commentText.length > MAX_COMMENT_CHARACTERS;
 
           const instruction =
             poll.choice_mode === "SINGLE"
@@ -325,27 +331,28 @@ export default function VotesClient() {
                 : `Select ${poll.min_selections}–${poll.max_selections} answers`;
 
           return (
-            <article className="poll-card" key={poll.id}>
+            <article
+              className="poll-card"
+              key={poll.id}
+            >
               <h3>{poll.title}</h3>
 
               {poll.description && (
                 <div
-                  className="field"
-                  style={{ marginTop: 12, marginBottom: 12 }}
+                  style={{
+                    width: "100%",
+                    border: "1px solid var(--border)",
+                    background: "white",
+                    color: "var(--text)",
+                    borderRadius: 10,
+                    padding: "12px",
+                    marginBottom: 12,
+                    lineHeight: 1.6,
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "anywhere",
+                  }}
                 >
-                  <label>Description</label>
-
-                  <textarea
-                    className="textarea"
-                    rows={6}
-                    value={poll.description}
-                    readOnly
-                    aria-label={`${poll.title} description`}
-                    style={{
-                      resize: "vertical",
-                      cursor: "default",
-                    }}
-                  />
+                  {poll.description}
                 </div>
               )}
 
@@ -354,7 +361,9 @@ export default function VotesClient() {
               </div>
 
               {poll.voted ? (
-                <div className="notice good">Vote submitted</div>
+                <div className="notice good">
+                  Vote submitted
+                </div>
               ) : (
                 <>
                   <div
@@ -367,7 +376,8 @@ export default function VotesClient() {
                     aria-label={poll.title}
                   >
                     {poll.options.map(option => {
-                      const checked = selected.includes(option.id);
+                      const checked =
+                        selected.includes(option.id);
 
                       return (
                         <label
@@ -384,10 +394,17 @@ export default function VotesClient() {
                             }
                             name={`poll-${poll.id}`}
                             checked={checked}
+                            disabled={submitting}
                             onChange={() =>
                               poll.choice_mode === "SINGLE"
-                                ? setSingle(poll.id, option.id)
-                                : toggleMultiple(poll, option.id)
+                                ? setSingle(
+                                    poll.id,
+                                    option.id,
+                                  )
+                                : toggleMultiple(
+                                    poll,
+                                    option.id,
+                                  )
                             }
                           />
 
@@ -398,52 +415,10 @@ export default function VotesClient() {
                   </div>
 
                   <div
-                    className="field"
-                    style={{ marginTop: 16 }}
+                    className="small muted"
+                    style={{ marginTop: 10 }}
                   >
-                    <label htmlFor={`poll-comment-${poll.id}`}>
-                      Amendments {" "}
-                      <span className="small muted">(optional)</span>
-                    </label>
-
-                    <textarea
-                      id={`poll-comment-${poll.id}`}
-                      className="textarea"
-                      rows={6}
-                      value={commentText}
-                      onChange={e =>
-                        setComments(prev => ({
-                          ...prev,
-                          [poll.id]: e.target.value,
-                        }))
-                      }
-                      placeholder="Add your suggested amendment about your vote (up to 400 words)"
-                    />
-
-                    <span
-                      className={
-                        commentTooLong
-                          ? "small notice bad"
-                          : "small muted"
-                      }
-                    >
-                      {commentWords} / {MAX_COMMENT_WORDS} words
-                    </span>
-                  </div>
-
-                  <div className="vote-submit-row">
-                    <span className="small muted">
-                      Selected: {selected.length}
-                    </span>
-
-                    <button
-                      className="public-btn"
-                      type="button"
-                      disabled={!validCount(poll) || commentTooLong}
-                      onClick={() => vote(poll)}
-                    >
-                      Submit vote
-                    </button>
+                    Selected: {selected.length}
                   </div>
                 </>
               )}
@@ -451,6 +426,58 @@ export default function VotesClient() {
           );
         })}
       </div>
+
+      {remainingPolls.length > 0 && (
+        <div
+          className="card"
+          style={{
+            marginTop: 18,
+            textAlign: "center",
+          }}
+        >
+          {!allRemainingValid && (
+            <p
+              className="small muted"
+              style={{ marginTop: 0 }}
+            >
+              Complete an answer for every poll before submitting.
+            </p>
+          )}
+
+          <button
+            className="public-btn"
+            type="button"
+            disabled={!allRemainingValid || submitting}
+            onClick={submitAllVotes}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+            }}
+          >
+            {submitting
+              ? "Submitting..."
+              : remainingPolls.length === 1
+                ? "Submit vote"
+                : `Submit all ${remainingPolls.length} votes`}
+          </button>
+
+          <p
+            className="small muted"
+            style={{ marginBottom: 0 }}
+          >
+            All selected votes are submitted together.
+          </p>
+        </div>
+      )}
+
+      {polls.length > 0 && remainingPolls.length === 0 && (
+        <div
+          className="notice good"
+          style={{ marginTop: 18 }}
+        >
+          All available votes have been submitted.
+        </div>
+      )}
     </div>
   );
 }
